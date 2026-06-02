@@ -95,6 +95,16 @@ logging.getLogger('mcp.server.lowlevel.server').setLevel(logging.WARNING)
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logging.getLogger('httpx.AsyncClient').setLevel(logging.WARNING) # 针对 httpx AsyncClient 的更具体配置
 
+# RAG 检索 agent 专用审计日志：独立写入 logs/rag_agent.log，
+# propagate=False 保证不混入 mcp_service.log / stderr。
+rag_logger = logging.getLogger("rag_agent")
+rag_logger.setLevel(logging.INFO)
+rag_logger.propagate = False
+if not rag_logger.handlers:
+    _rag_log_handler = logging.FileHandler(os.path.join(log_dir, "rag_agent.log"), encoding="utf-8")
+    _rag_log_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    rag_logger.addHandler(_rag_log_handler)
+
 
 # 兼容 fastmcp.FastMCP 或 mcp.server.Server
 MCPServerClass = None
@@ -458,6 +468,7 @@ async def retrieve_knowledge(
         # 查找SQL注入相关技术
         result = await retrieve_knowledge("SQL injection WAF bypass", top_k=3, task_intent="bypass /admin/login")
     """
+    rag_logger.info("REQUEST   query=%r top_k=%s task_intent=%r", query, top_k, task_intent)
     if not service_url:
         service_url = KNOWLEDGE_SERVICE_URL
 
@@ -471,6 +482,7 @@ async def retrieve_knowledge(
         response.raise_for_status()
         data = response.json()
     except httpx.RequestError as e:
+        rag_logger.warning("RESPONSE  connect-error service=%s err=%s", service_url, e)
         return json.dumps(
             {
                 "success": False,
@@ -481,6 +493,7 @@ async def retrieve_knowledge(
             indent=2,
         )
     except Exception as e:
+        rag_logger.warning("RESPONSE  fetch-error err=%s", e)
         return json.dumps({"success": False, "error": f"检索知识时发生错误: {e}"}, ensure_ascii=False, indent=2)
 
     # --- 2. Normalise to the doc_id format expected by the Extractor ---
@@ -507,6 +520,9 @@ async def retrieve_knowledge(
             style="yellow",
         ))
         fallback = raw_results[:5]
+        rag_logger.warning(
+            "RESPONSE  (extractor-failed fallback) %d results: %s", len(fallback), fallback
+        )
         return json.dumps(
             {
                 "success": True,
@@ -543,6 +559,12 @@ async def retrieve_knowledge(
     if extraction.degraded:
         output["extractor_fallback"] = True
 
+    rag_logger.info(
+        "RESPONSE  %d results%s: %s",
+        len(results),
+        " (degraded)" if extraction.degraded else "",
+        [{"id": r["id"], "score": round(r["score"], 4), "snippet": r["snippet"]} for r in results],
+    )
     return json.dumps(output, ensure_ascii=False, indent=2)
 
 
