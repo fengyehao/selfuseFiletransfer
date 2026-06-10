@@ -163,6 +163,26 @@ LLM_DISABLE_THINKING = {
 }
 
 # 模型上下文窗口 (token)，用于派生执行器压缩阈值。本地模型多为 8K–32K 窗口。
+#
+# ── 按窗口大小调压缩触发的档位建议 ───────────────────────────────────────────────
+# 只设 LLM_CONTEXT_WINDOW 不够：策略3（token）阈值会按它自动派生(0.7×)，但策略1/2 是
+# “消息条数”触发、与窗口无关，必须随窗口一起手动抬高，否则大窗口也会在十几条消息就被
+# 压缩（见 core/executor.py 的 _compress_context_if_needed 三个 OR 触发条件）。
+#
+#  档位   LLM_CONTEXT_   →派生token   MESSAGE_COMPRESS_   COMPRESS_INTERVAL_   RECENT_MESSAGES_
+#         WINDOW         阈值(0.7×)   THRESHOLD           MSG_THRESHOLD        KEEP
+#  8k       8192          ≈5734            8                   6                  4
+#  16k     16384         ≈11468           12                   8                  6
+#  32k     32768         ≈22937           16                  12                  6
+#  64k     65536         ≈45875           24                  16                  8
+#  128k   131072         ≈91750           32                  20                 10
+#
+# 当前代码默认已对齐上表 32k 档：window=32768，消息阈值 16/12/6
+# （MESSAGE_COMPRESS_THRESHOLD / COMPRESS_INTERVAL_MSG_THRESHOLD / RECENT_MESSAGES_KEEP）。
+# 提醒：本地 27B–70B 模型在标称窗口远低处，指令跟随/JSON 合法率就开始下降（见
+#       docs/local-model-optimization-plan.md）。消息条数阈值同时是质量护栏，建议温和上调
+#       并对真实模型观察 JSON 合法率，别直接把窗口顶满。token 阈值无需手设，设好窗口即自动派生。
+# ────────────────────────────────────────────────────────────────────────────────
 LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
 
 # ============================================================================
@@ -209,7 +229,7 @@ ANTHROPIC_MODELS = {
 EXECUTOR_MAX_STEPS = int(os.getenv("EXECUTOR_MAX_STEPS", "8"))
 
 # 消息历史压缩阈值
-EXECUTOR_MESSAGE_COMPRESS_THRESHOLD = int(os.getenv("EXECUTOR_MESSAGE_COMPRESS_THRESHOLD", "12"))
+EXECUTOR_MESSAGE_COMPRESS_THRESHOLD = int(os.getenv("EXECUTOR_MESSAGE_COMPRESS_THRESHOLD", "16"))
 
 # Token数量压缩阈值
 # 未显式设置 EXECUTOR_TOKEN_COMPRESS_THRESHOLD 时，按 LLM_CONTEXT_WINDOW 的 70% 派生
@@ -241,7 +261,7 @@ EXECUTOR_MIN_COMPRESS_MESSAGES = int(os.getenv("EXECUTOR_MIN_COMPRESS_MESSAGES",
 EXECUTOR_COMPRESS_INTERVAL = int(os.getenv("EXECUTOR_COMPRESS_INTERVAL", "5"))
 
 # 执行轮次压缩时的消息数阈值
-EXECUTOR_COMPRESS_INTERVAL_MSG_THRESHOLD = int(os.getenv("EXECUTOR_COMPRESS_INTERVAL_MSG_THRESHOLD", "8"))
+EXECUTOR_COMPRESS_INTERVAL_MSG_THRESHOLD = int(os.getenv("EXECUTOR_COMPRESS_INTERVAL_MSG_THRESHOLD", "12"))
 
 # 工具调用超时时间（秒）
 EXECUTOR_TOOL_TIMEOUT = int(os.getenv("EXECUTOR_TOOL_TIMEOUT", "120"))
