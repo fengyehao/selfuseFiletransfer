@@ -221,6 +221,14 @@ class LLMClient:
             tuple: (headers, payload)
         """
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+
+        # 部分本地引擎（LM Studio 等）的 jinja 聊天模板在消息列表无 user 角色时直接报
+        # "No user query found in messages."；云端 API 容忍 system-only。对齐 Anthropic 路径
+        # （_prepare_anthropic_payload 的 :169-171 护栏），确保至少有一条 user 消息再发出。
+        if not any(m.get("role") == "user" for m in current_messages):
+            kickoff = "请根据以上系统指令开始本步执行" + ("，并仅输出符合要求的合法 JSON。" if expect_json else "。")
+            current_messages = current_messages + [{"role": "user", "content": kickoff}]
+
         payload = {
             "model": model_name,
             "messages": current_messages,
