@@ -1432,32 +1432,35 @@ class GraphManager:
             return str(val) if val is not None else "N/A"
 
     def _add_credential_details(self, node_branch, data: Dict[str, Any]) -> None:
+        from rich.markup import escape
         cred_data = data.get("data", {})
-        node_branch.add(f"用户名: {cred_data.get('username', 'N/A')}")
-        node_branch.add(f"密码: {cred_data.get('password', 'N/A')}")
-        node_branch.add(f"来源: {cred_data.get('source', 'N/A')}")
+        node_branch.add(f"用户名: {escape(str(cred_data.get('username', 'N/A')))}")
+        node_branch.add(f"密码: {escape(str(cred_data.get('password', 'N/A')))}")
+        node_branch.add(f"来源: {escape(str(cred_data.get('source', 'N/A')))}")
         if not cred_data:
-            node_branch.add(f"用户名: {data.get('username', 'N/A')}")
-            node_branch.add(f"密码: {data.get('password', 'N/A')}")
-            node_branch.add(f"来源: {data.get('source', 'N/A')}")
+            node_branch.add(f"用户名: {escape(str(data.get('username', 'N/A')))}")
+            node_branch.add(f"密码: {escape(str(data.get('password', 'N/A')))}")
+            node_branch.add(f"来源: {escape(str(data.get('source', 'N/A')))}")
 
     def _add_system_property_details(self, node_branch, data: Dict[str, Any]) -> None:
+        from rich.markup import escape
         prop_data = data.get("data", {})
-        node_branch.add(f"属性: {prop_data.get('property', 'N/A')}")
-        node_branch.add(f"值: {prop_data.get('value', 'N/A')}")
-        node_branch.add(f"来源: {prop_data.get('source', 'N/A')}")
+        node_branch.add(f"属性: {escape(str(prop_data.get('property', 'N/A')))}")
+        node_branch.add(f"值: {escape(str(prop_data.get('value', 'N/A')))}")
+        node_branch.add(f"来源: {escape(str(prop_data.get('source', 'N/A')))}")
         if not prop_data:
-            node_branch.add(f"属性: {data.get('property', 'N/A')}")
-            node_branch.add(f"值: {data.get('value', 'N/A')}")
-            node_branch.add(f"来源: {data.get('source', 'N/A')}")
+            node_branch.add(f"属性: {escape(str(data.get('property', 'N/A')))}")
+            node_branch.add(f"值: {escape(str(data.get('value', 'N/A')))}")
+            node_branch.add(f"来源: {escape(str(data.get('source', 'N/A')))}")
 
     def _add_target_artifact_details(self, node_branch, data: Dict[str, Any]) -> None:
+        from rich.markup import escape
         artifact_data = data.get("data", {})
-        node_branch.add(f"产物: {artifact_data.get('value', 'N/A')}")
-        node_branch.add(f"来源: {artifact_data.get('source', 'N/A')}")
+        node_branch.add(f"产物: {escape(str(artifact_data.get('value', 'N/A')))}")
+        node_branch.add(f"来源: {escape(str(artifact_data.get('source', 'N/A')))}")
         if not artifact_data:
-            node_branch.add(f"产物: {data.get('value', 'N/A')}")
-            node_branch.add(f"来源: {data.get('source', 'N/A')}")
+            node_branch.add(f"产物: {escape(str(data.get('value', 'N/A')))}")
+            node_branch.add(f"来源: {escape(str(data.get('source', 'N/A')))}")
 
     def _add_node_details(self, node_branch, node_type: str, data: Dict[str, Any]) -> None:
         from rich.markup import escape

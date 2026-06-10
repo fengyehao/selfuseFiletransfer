@@ -1811,7 +1811,10 @@ async def main():
                                 console.print(Panel(f"子任务 {subtask_id} 因果图更新:", title="因果图更新", style="green"))
                                 graph_manager.print_causal_graph(console, max_nodes=100)
                             except Exception as e:
-                                console.print(Panel(f"打印因果图失败: {e}", title="因果图错误", style="red"))
+                                # e 本身可能含 Rich 标记（如 MarkupError 文案里的 '[/]'），裸插值会让本处理器
+                                # 再次抛 MarkupError 且无人接，一路冒泡崩掉整个 run。转义后再打印，杜绝自爆。
+                                from rich.markup import escape
+                                console.print(Panel(f"打印因果图失败: {escape(str(e))}", title="因果图错误", style="red"))
 
                     # Process key facts
                     key_facts = reflection_output.get("key_facts", [])
