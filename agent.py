@@ -1813,7 +1813,8 @@ async def main():
                             except Exception as e:
                                 # e 本身可能含 Rich 标记（如 MarkupError 文案里的 '[/]'），裸插值会让本处理器
                                 # 再次抛 MarkupError 且无人接，一路冒泡崩掉整个 run。转义后再打印，杜绝自爆。
-                                from rich.markup import escape
+                                # 用模块级 escape（agent.py:45）；勿在此函数内 import，否则 escape 变局部、
+                                # 遮蔽全局，致 main() 中更早的 escape 调用抛 UnboundLocalError。
                                 console.print(Panel(f"打印因果图失败: {escape(str(e))}", title="因果图错误", style="red"))
 
                     # Process key facts
