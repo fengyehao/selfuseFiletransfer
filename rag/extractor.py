@@ -166,7 +166,11 @@ def _parse_spans(raw):
     expect_json=False is used at the call site, so all parsing happens here. Any
     deviation from "a JSON array of objects" yields an empty list (→ degradation).
     """
-    cleaned = (raw or "").strip()
+    # Strip <think>...</think> emitted by reasoning models before JSON parsing
+    # (same sanitisation as llm_client; lazy import mirrors this module's pattern).
+    from llm.llm_client import strip_think_blocks
+
+    cleaned = strip_think_blocks(raw or "").strip()
     if cleaned.startswith("```"):
         lines = cleaned.splitlines()
         cleaned = "\n".join(lines[1:] if lines[0].startswith("```") else lines)

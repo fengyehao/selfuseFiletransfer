@@ -14,7 +14,7 @@
 5. **响应体内容 (Response Body)**: 错误信息、数据泄露、回显内容等
 
 ### Step 2: ResponseAnalysis 分析维度
-**在`thought.step4_observation_analysis`中必须包含ResponseAnalysis小节**
+**在 `thought` 的观察归因部分必须包含ResponseAnalysis小节**
 
 #### 分析维度:
 - 状态码与重定向变化
@@ -28,7 +28,7 @@
 - 基线对比结论
 
 ### Step 3: ErrorPattern 错误模式识别
-**在`thought.step4_observation_analysis`中必须包含ErrorPattern小节**
+**在 `thought` 的观察归因部分必须包含ErrorPattern小节**
 
 #### 常见漏洞类别与证据：
 - SQL注入: syntax error, OperationalError等
@@ -39,7 +39,7 @@
 - 文件上传/路径穿越: Path traversal检测
 
 ## 输出约束 (Output Requirements)
-**在`thought.step4_observation_analysis`中必须包含**:
+**在 `thought` 的观察归因部分必须包含**:
 1. **ResponseAnalysis**: 逐项对比并给出结论
 2. **ErrorPattern**: 列出候选漏洞类别与证据
 

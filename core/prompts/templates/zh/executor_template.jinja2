@@ -91,6 +91,9 @@
 ```
 
 ### 关键要求
+- `thought` 是**单个字符串字段**（一段连贯思维链），不要输出嵌套对象或分步子字段。
+- `thought` 中的**观察归因**部分仅在本轮有工具执行结果时书写；首轮（工具调用前）省略该部分。
+- `hypothesis_update` 仅在有可归因的观察结果时填写；`staged_causal_nodes` 仅在确有新情报时提供，否则用空数组 `[]`。
 - 当 `is_subtask_complete` 为 `false` 时，`execution_operations` 必须至少包含一个有效 `EXECUTE_NOW` 操作。
 - 当 `is_subtask_complete` 为 `true` 时，`execution_operations` 必须是空数组 `[]`。
 - 每个 `EXECUTE_NOW` 操作都必须包含 `node_id`、`parent_id`、`action.tool`、`action.params`。

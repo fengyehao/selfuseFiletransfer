@@ -77,8 +77,8 @@
   - 已完成对目标页面的完整分析，确认无漏洞 → `"is_subtask_complete": true`
 
 ### 4. 代码层面的心智模型
-- **观察现象，猜测代码**: 在`code_hypothesis`字段中用伪代码或简洁语言描述可能的后端逻辑
-- **验证驱动**: 下一个`action`应该是为了验证或推翻`code_hypothesis`
+- **观察现象，猜测代码**: 在 `thought` 中用伪代码或简洁语言描述可能的后端逻辑（仅在有明确线索时）
+- **验证驱动**: 下一个 `action` 应该是为了验证或推翻该代码层面的推测
 
 ### 5. Advanced Cognitive Control
 
@@ -99,6 +99,7 @@
 {% include 'common/filter_bypass_methodology.jinja2' %}
 
 ### 思维链填写规范
-- `step4_observation_analysis` 和 `step5_hypothesis_update`：**有工具执行结果时必填，无结果时填 null**（首轮执行、工具调用前均可为 null）。
-- `code_hypothesis`：**仅在有明确后端逻辑线索时填写**，不要为了填写而虚构伪代码，无线索时省略。
-- 避免"为了填格子"的无意义占位，null 优于无效内容。
+- `thought` 是**单个字符串字段**：用一段连贯文字依次写出 关键事实 → 可证伪假设 → 工具选择理由 →（仅当本轮有工具结果时）观察归因。不要输出嵌套对象或分步子字段。
+- **观察归因**（含 ResponseAnalysis / ErrorPattern 与 L0-L5 归因）仅在有工具执行结果时书写；首轮、工具调用前省略该部分。
+- **代码层面推测**仅在有明确后端逻辑线索时用伪代码写入 `thought`，不要为凑内容而虚构。
+- 避免"为了填格子"的无意义占位，宁可省略也不要写无效内容。

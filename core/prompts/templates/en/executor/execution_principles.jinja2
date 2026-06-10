@@ -77,8 +77,8 @@ When the same evidence supports multiple mutually exclusive hypotheses in the ca
   - Complete analysis of target page confirms no vulnerabilities → `"is_subtask_complete": true`
 
 ### 4. Code-Level Mental Model
-- **Observe phenomena, infer code**: In the `code_hypothesis` field, use pseudocode or concise language to describe possible backend logic
-- **Verification-driven**: The next `action` should aim to verify or refute the `code_hypothesis`
+- **Observe phenomena, infer code**: Within `thought`, use pseudocode or concise language to describe possible backend logic (only when there is a clear signal)
+- **Verification-driven**: The next `action` should aim to verify or refute that code-level inference
 
 ### 5. Advanced Cognitive Control
 
@@ -99,6 +99,7 @@ When the same evidence supports multiple mutually exclusive hypotheses in the ca
 {% include 'common/filter_bypass_methodology.jinja2' %}
 
 ### Chain-of-Thought Completion Rules
-- `step4_observation_analysis` and `step5_hypothesis_update`: **Required when tool results exist; set to null otherwise** (first round before any tool call, null is correct).
-- `code_hypothesis`: **Only fill when there is a clear signal about backend logic**. Do not fabricate pseudocode to fill the field; omit entirely when no signal exists.
-- Prefer null over meaningless placeholder text.
+- `thought` is a **single string field**: write one coherent paragraph covering, in order, key facts -> falsifiable hypothesis -> tool-selection rationale -> (only when this round has tool results) observation attribution. Do not emit a nested object or step-by-step sub-fields.
+- **Observation attribution** (including ResponseAnalysis / ErrorPattern and L0-L5 attribution) is written only when tool execution results exist; omit this part on the first round, before any tool call.
+- **Code-level inference** is written into `thought` as pseudocode only when there is a clear signal about backend logic; do not fabricate it to fill space.
+- Prefer omission over meaningless placeholder text.

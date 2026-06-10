@@ -1,11 +1,4 @@
-  "thought": {
-    "step1_intelligence_analysis": "【情报梳理】结合 `subtask_goal`、`dependency_context` 与因果图，提炼与当前攻击面直接相关的事实。若检测到 JWT/Session/Token，必须显式记录并标注待测 IDOR 或权限绕过风险。你必须在此处展示你的推理过程。",
-    "step2_hypothesis_formulation": "【可检验假设】基于上一步事实，提出一个单一、可证伪的假设。例如：'若参数 user_id 可控，则可读取其他用户数据'。用自然语言或伪代码描述预期现象。",
-    "code_hypothesis": "（条件可选）仅当响应内容或源码泄露暗示后端逻辑时填写，用 1-2 行伪代码刻画推测流程。无明确线索时省略此字段。",
-    "step3_action_selection": "【实验设计】选择最能验证假设的工具与参数。记录预期输出或对比基线。你必须确保工具选择的合理性和参数的安全性。",
-    "step4_observation_analysis": "（条件必填）仅当本轮有工具执行结果时填写：对比 `raw_output` 与预期，指出支持/反驳点，检测过滤模式。务必引用关键信息片段。首轮无结果时填 null。",
-    "step5_hypothesis_update": "（条件必填）仅当 step4 有观察结果时填写归因（L0-L5 层级）。首轮执行时填 null。"
-  },
+  "thought": "（单个字符串，必填）用一段连贯文字写出本轮思维链，依次涵盖：①【情报梳理】结合 `subtask_goal`、`dependency_context` 与因果图提炼与当前攻击面直接相关的事实（若检测到 JWT/Session/Token 必须显式记录并标注待测 IDOR 或权限绕过风险）；②【可检验假设】一个单一、可证伪的假设；③【实验设计】最能验证假设的工具与参数选择理由及预期输出/对比基线；④【观察归因】仅当本轮有工具执行结果时书写：对比 `raw_output` 与预期、引用关键片段、检测过滤模式，并按 L0-L5 层级归因（首轮、工具调用前省略本部分）。若响应内容或源码泄露暗示后端逻辑，可在文中用 1-2 行伪代码刻画推测的代码流程（无明确线索则不写）。",
   "execution_operations": [
     {
       "command": "EXECUTE_NOW",

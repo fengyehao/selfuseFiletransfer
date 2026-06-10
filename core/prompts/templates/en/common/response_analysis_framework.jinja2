@@ -14,7 +14,7 @@ Accurately identify key information in tool output, transform raw responses into
 5. **Response Body**: Error messages, data leaks, echo content, etc.
 
 ### Step 2: ResponseAnalysis Dimensions
-**Must include a ResponseAnalysis subsection in `thought.step4_observation_analysis`**
+**Must include a ResponseAnalysis subsection in the observation-attribution part of `thought`**
 
 #### Analysis Dimensions:
 - Status code and redirect changes
@@ -28,7 +28,7 @@ Accurately identify key information in tool output, transform raw responses into
 - Baseline comparison conclusions
 
 ### Step 3: ErrorPattern Recognition
-**Must include an ErrorPattern subsection in `thought.step4_observation_analysis`**
+**Must include an ErrorPattern subsection in the observation-attribution part of `thought`**
 
 #### Common Vulnerability Categories & Evidence:
 - SQL Injection: syntax error, OperationalError, etc.
@@ -39,7 +39,7 @@ Accurately identify key information in tool output, transform raw responses into
 - File Upload/Path Traversal: Path traversal detection
 
 ## Output Requirements
-**Must include in `thought.step4_observation_analysis`**:
+**Must include in the observation-attribution part of `thought`**:
 1. **ResponseAnalysis**: Item-by-item comparison with conclusions
 2. **ErrorPattern**: List candidate vulnerability categories with evidence
 

@@ -75,6 +75,26 @@ LLM_TEMPERATURES = {
     "extractor": 0.0,  # 抽取式选择是确定性任务，温度取0以最大化稳定性
 }
 
+# 为不同角色配置输出 token 上限 (max_tokens)，结构与 LLM_TEMPERATURES / LLM_MODELS 同构。
+# 背景：本地推理引擎对“未设 max_tokens”的默认行为不一，复杂嵌套 JSON 可能被中途截断导致解析失败；
+# 显式封顶亦可控制单次调用的延迟与显存占用。
+# 默认：planner/executor/reflector 等输出 JSON 较大，给足 4096；extractor 为抽取式短输出，给 1024。
+LLM_MAX_TOKENS = {
+    "default": int(os.getenv("LLM_DEFAULT_MAX_TOKENS", "4096")),
+    "planner": int(os.getenv("LLM_PLANNER_MAX_TOKENS", os.getenv("LLM_DEFAULT_MAX_TOKENS", "4096"))),
+    "executor": int(os.getenv("LLM_EXECUTOR_MAX_TOKENS", os.getenv("LLM_DEFAULT_MAX_TOKENS", "4096"))),
+    "reflector": int(os.getenv("LLM_REFLECTOR_MAX_TOKENS", os.getenv("LLM_DEFAULT_MAX_TOKENS", "4096"))),
+    "expert_analysis": int(os.getenv("LLM_EXPERT_MAX_TOKENS", os.getenv("LLM_DEFAULT_MAX_TOKENS", "4096"))),
+    "summarizer": int(os.getenv("LLM_SUMMARIZER_MAX_TOKENS", os.getenv("LLM_DEFAULT_MAX_TOKENS", "4096"))),
+    "reflector_validator": int(
+        os.getenv("LLM_REFLECTOR_VALIDATOR_MAX_TOKENS", os.getenv("LLM_DEFAULT_MAX_TOKENS", "4096"))
+    ),
+    "planner_crisis_expert": int(
+        os.getenv("LLM_PLANNER_CRISIS_EXPERT_MAX_TOKENS", os.getenv("LLM_DEFAULT_MAX_TOKENS", "4096"))
+    ),
+    "extractor": int(os.getenv("LLM_EXTRACTOR_MAX_TOKENS", "1024")),
+}
+
 # ============================================================================
 # LLM高级配置
 # ============================================================================
@@ -102,6 +122,48 @@ LLM_THINKING = {
     ),
     "extractor": os.getenv("LLM_EXTRACTOR_THINKING", os.getenv("LLM_DEFAULT_THINKING", "off")),
 }
+
+# 约束解码 / JSON 输出模式（本地引擎适配，宽松档 2a：仅强制“输出为合法 JSON 对象”）。取值：
+# - off:         不注入任何 JSON 约束（适配不支持 response_format 的后端，依赖 prompt + 健壮解析器）
+# - json_object: 注入 response_format={"type":"json_object"}（默认，等价于改动前行为）
+# - guided_json: vLLM/SGLang 约束解码，注入 extra_body.guided_json={"type":"object"}
+# - ollama:      注入顶层 format="json"
+# 仅在调用方 expect_json=True 时生效。
+LLM_JSON_MODE = os.getenv("LLM_JSON_MODE", "json_object").lower()
+
+# 为不同角色配置是否禁用模型“思考段”（reasoning 模型如 QwQ/Qwen3 会在 content 直接吐 <think>...</think>）。
+# 注入方式按后端：vLLM/SGLang → extra_body.chat_template_kwargs={"enable_thinking": false}；Ollama → 顶层 think=false。
+# 默认 false（不禁用）。与解析侧的 <think> 段剥离相互独立、互补（一个从源头关闭，一个事后净化）。
+LLM_DISABLE_THINKING = {
+    "default": os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false").lower() == "true",
+    "planner": os.getenv(
+        "LLM_PLANNER_DISABLE_THINKING", os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false")
+    ).lower() == "true",
+    "executor": os.getenv(
+        "LLM_EXECUTOR_DISABLE_THINKING", os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false")
+    ).lower() == "true",
+    "reflector": os.getenv(
+        "LLM_REFLECTOR_DISABLE_THINKING", os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false")
+    ).lower() == "true",
+    "expert_analysis": os.getenv(
+        "LLM_EXPERT_DISABLE_THINKING", os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false")
+    ).lower() == "true",
+    "summarizer": os.getenv(
+        "LLM_SUMMARIZER_DISABLE_THINKING", os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false")
+    ).lower() == "true",
+    "reflector_validator": os.getenv(
+        "LLM_REFLECTOR_VALIDATOR_DISABLE_THINKING", os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false")
+    ).lower() == "true",
+    "planner_crisis_expert": os.getenv(
+        "LLM_PLANNER_CRISIS_EXPERT_DISABLE_THINKING", os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false")
+    ).lower() == "true",
+    "extractor": os.getenv(
+        "LLM_EXTRACTOR_DISABLE_THINKING", os.getenv("LLM_DEFAULT_DISABLE_THINKING", "false")
+    ).lower() == "true",
+}
+
+# 模型上下文窗口 (token)，用于派生执行器压缩阈值。本地模型多为 8K–32K 窗口。
+LLM_CONTEXT_WINDOW = int(os.getenv("LLM_CONTEXT_WINDOW", "32768"))
 
 # ============================================================================
 # LLM提供商配置
@@ -150,7 +212,17 @@ EXECUTOR_MAX_STEPS = int(os.getenv("EXECUTOR_MAX_STEPS", "8"))
 EXECUTOR_MESSAGE_COMPRESS_THRESHOLD = int(os.getenv("EXECUTOR_MESSAGE_COMPRESS_THRESHOLD", "12"))
 
 # Token数量压缩阈值
-EXECUTOR_TOKEN_COMPRESS_THRESHOLD = int(os.getenv("EXECUTOR_TOKEN_COMPRESS_THRESHOLD", "80000"))
+# 未显式设置 EXECUTOR_TOKEN_COMPRESS_THRESHOLD 时，按 LLM_CONTEXT_WINDOW 的 70% 派生
+# （更早触发压缩，避免本地小窗口模型在压缩触发前即上下文溢出）；显式设置则尊重显式值（可覆盖）。
+def _derive_token_compress_threshold(explicit: str | None, context_window: int) -> int:
+    if explicit is not None:
+        return int(explicit)
+    return int(context_window * 0.7)
+
+
+EXECUTOR_TOKEN_COMPRESS_THRESHOLD = _derive_token_compress_threshold(
+    os.getenv("EXECUTOR_TOKEN_COMPRESS_THRESHOLD"), LLM_CONTEXT_WINDOW
+)
 
 # 无新产出物的耐心值（连续多少步无产出则终止）
 # 必须小于 EXECUTOR_MAX_STEPS，否则该机制永远不会触发

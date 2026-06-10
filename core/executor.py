@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import time
 import tempfile
 from typing import Dict, Any
@@ -22,7 +23,7 @@ def _get_console():
 from core.events import broker
 from core.graph_manager import GraphManager
 from core.prompts import PromptManager
-from llm.llm_client import LLMClient
+from llm.llm_client import LLMClient, strip_think_blocks
 from tools.mcp_client import call_mcp_tool_async
 from conf.config import (
     EXECUTOR_MAX_STEPS,
@@ -226,6 +227,140 @@ async def _compress_context_if_needed(
     return messages
 
 
+# --- item 4（韧性）：解析失败抢救 -------------------------------------------------
+# 本地 27B–70B 模型常产出截断 / 夹带散文的 JSON，导致 send_message 三次重试后仍解析失败。
+# 与其直接杀掉子任务，先尝试从原始文本中"宽松抽取"可执行的 execution_operations；抢救出的
+# op 仍会走下游既有的规范化与校验（不直接写入因果图）。参考 rag/extractor.py 的"严格不劣于"
+# 降级哲学（见 docs/local-model-optimization-plan.md item 4）。
+
+
+def _scan_balanced(text: str, start: int) -> int | None:
+    """从 text[start]（须为 '{' 或 '['）起做括号配对扫描，返回匹配闭合符之后的索引。
+
+    扫描时尊重 JSON 字符串字面量与转义，避免字符串内部的括号 / 引号干扰（payload 常含
+    []、{}、引号）。若到串尾仍未闭合（典型的中途截断）返回 None。
+    """
+    open_ch = text[start]
+    close_ch = {"{": "}", "[": "]"}.get(open_ch)
+    if close_ch is None:
+        return None
+    depth = 0
+    in_str = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return None
+
+
+def _scan_json_objects(text: str, start: int) -> list:
+    """从 text[start] 起逐个抽取顶层 `{...}` 对象并 json.loads，返回成功解析的 dict 列表。
+
+    遇到第一个无法闭合的 `{`（截断）即停止——这正是要抢救"截断前已完整的对象"。
+    """
+    objects = []
+    i = start
+    n = len(text)
+    while i < n:
+        if text[i] == "{":
+            end = _scan_balanced(text, i)
+            if end is None:
+                break  # 截断：之后不再有完整对象
+            try:
+                obj = json.loads(text[i:end])
+                if isinstance(obj, dict):
+                    objects.append(obj)
+            except Exception:
+                pass
+            i = end
+        else:
+            i += 1
+    return objects
+
+
+def _coerce_to_op(obj, index: int) -> dict | None:
+    """把候选 dict 规整为可执行的 EXECUTE_NOW 操作；无法构成有效操作时返回 None。
+
+    既接受完整 op（含 action / command），也接受裸 action（顶层带 tool / name）。补齐缺失的
+    command 与 node_id，确保能通过 Executor 既有的 "EXECUTE_NOW + node_id" 过滤。
+    """
+    if not isinstance(obj, dict):
+        return None
+    if isinstance(obj.get("action"), dict) or str(obj.get("command", "")).upper() == "EXECUTE_NOW":
+        op = dict(obj)
+    elif obj.get("tool") or obj.get("name"):  # 裸 action 对象
+        op = {"action": {k: obj[k] for k in ("tool", "name", "params", "arguments") if k in obj}}
+    else:
+        return None
+    op.setdefault("command", "EXECUTE_NOW")
+    if not op.get("node_id") or op.get("node_id") == "None":
+        op["node_id"] = f"salvaged_{index + 1}"
+    action = op.get("action")
+    if not isinstance(action, dict) or not (action.get("tool") or action.get("name")):
+        return None
+    return op
+
+
+def _salvage_execution_operations(raw) -> dict | None:
+    """从无法整体解析的 LLM 原文中宽松抽取可执行的 execution_operations。
+
+    策略：先剥离 <think> 段；优先定位 "execution_operations" 数组（整体解析，失败则在数组区
+    域逐元素抽取以应对截断）；若无该键则全文扫描，抢救裸 op / action 对象。抢救到 ≥1 个可执行
+    op 时返回最小 reply dict，否则返回 None 交由调用方降级。返回的 op 仍走 Executor 既有的
+    规范化与校验，不直接入图。
+    """
+    if not isinstance(raw, str):
+        return None
+    text = strip_think_blocks(raw)
+
+    candidates: list = []
+    match = re.search(r'"execution_operations"\s*:\s*\[', text)
+    if match:
+        arr_start = match.end() - 1  # 指向匹配到的 '['
+        end = _scan_balanced(text, arr_start)
+        if end is not None:
+            try:
+                arr = json.loads(text[arr_start:end])
+                if isinstance(arr, list):
+                    candidates = [x for x in arr if isinstance(x, dict)]
+            except Exception:
+                candidates = []
+        if not candidates:
+            # 数组被截断 / 夹带噪声：在数组区域逐个抽取已完整的对象
+            candidates = _scan_json_objects(text, arr_start)
+    if not candidates:
+        # 没有 execution_operations 键：全文扫描，抢救裸 op / action 对象
+        candidates = _scan_json_objects(text, 0)
+
+    ops = []
+    for idx, candidate in enumerate(candidates):
+        op = _coerce_to_op(candidate, idx)
+        if op is not None:
+            ops.append(op)
+    if not ops:
+        return None
+    return {
+        "thought": "（系统抢救）原始输出无法整体解析，已从中抽取可执行操作以继续本步。",
+        "execution_operations": ops,
+        "is_subtask_complete": False,
+    }
+
+
 async def _call_llm_and_parse_response(
     llm: "LLMClient",
     messages: list,
@@ -264,14 +399,28 @@ async def _call_llm_and_parse_response(
         raise RuntimeError("llm_parse_error")
 
     if not llm_reply_json:
-        _get_console().print("LLM输出解析失败，无法继续执行。", style="red")
-        if console_output_path:
-            try:
-                with open(console_output_path, "a", encoding="utf-8") as f:
-                    f.write(f"[ERROR] LLM输出解析失败，子任务 {subtask_id} 终止。\n")
-            except Exception:
-                pass
-        raise RuntimeError("llm_empty_response")
+        # item 4（韧性）：整体解析失败时，先尝试从原始文本抢救可执行的 execution_operations，
+        # 而非直接终止子任务。raw 由 send_message 在 JSON 重试耗尽时经 metrics 透出（并发安全）。
+        raw = call_metrics.get("raw") if isinstance(call_metrics, dict) else None
+        salvaged = _salvage_execution_operations(raw)
+        if salvaged is not None:
+            _get_console().print("⚠️ LLM输出无法整体解析，已抢救出可执行操作并继续本步。", style="yellow")
+            if console_output_path:
+                try:
+                    with open(console_output_path, "a", encoding="utf-8") as f:
+                        f.write(f"[WARN] LLM输出解析失败，已抢救 execution_operations 继续子任务 {subtask_id}。\n")
+                except Exception:
+                    pass
+            llm_reply_json = salvaged
+        else:
+            _get_console().print("LLM输出解析失败且无法抢救，触发降级处理。", style="red")
+            if console_output_path:
+                try:
+                    with open(console_output_path, "a", encoding="utf-8") as f:
+                        f.write(f"[ERROR] LLM输出解析失败且无法抢救，子任务 {subtask_id} 进入降级处理。\n")
+                except Exception:
+                    pass
+            raise RuntimeError("llm_empty_response")
 
     messages.append({"role": "assistant", "content": json.dumps(llm_reply_json, ensure_ascii=False)})
 
@@ -557,6 +706,7 @@ async def run_executor_cycle(
     # 从子任务节点读取持久化的执行链，确保子任务恢复执行时能续接上一次的执行链
     last_step_ids = graph_manager.get_subtask_last_step_ids(subtask_id)
     failure_counts_per_parent = {}
+    consecutive_parse_failures = 0  # item 4：连续"无法解析且无法抢救"次数，达阈值才终止子任务
 
     while True:
         # 检查终止信号
@@ -612,7 +762,44 @@ async def run_executor_cycle(
             llm_reply_json, messages = await _call_llm_and_parse_response(
                 llm, messages, update_cycle_metrics, subtask_id, console_output_path, output_mode=output_mode
             )
+            consecutive_parse_failures = 0  # 成功（含抢救成功）→ 重置降级计数
         except RuntimeError as e:
+            # item 4（韧性）：JSON 解析彻底失败且无法抢救（llm_empty_response）时优雅降级——
+            # 注入一次"重新观察"提示并重试本步，而非杀掉子任务；连续达阈值才终止。
+            # 其他 RuntimeError（llm_timeout / llm_parse_error，即拿不到响应）维持原行为，直接终止。
+            if str(e) == "llm_empty_response":
+                consecutive_parse_failures += 1
+                if consecutive_parse_failures >= EXECUTOR_FAILURE_THRESHOLD:
+                    _get_console().print(
+                        Panel(
+                            f"连续 {consecutive_parse_failures} 次无法解析或抢救 LLM 输出，终止子任务。",
+                            title="智能终止",
+                            style="bold red",
+                        )
+                    )
+                    graph_manager.update_subtask_conversation_history(subtask_id, messages)
+                    return (subtask_id, "error", cycle_metrics)
+                _get_console().print(
+                    Panel(
+                        f"LLM 输出无法解析（第 {consecutive_parse_failures}/{EXECUTOR_FAILURE_THRESHOLD} 次），"
+                        "降级为重新观察并重试本步，不终止子任务。",
+                        title="降级处理",
+                        style="yellow",
+                    )
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "⚠️ 系统提示：你上一次的回复经多次重试仍无法解析为合法 JSON，且无法从中抢救出可执行操作。"
+                            "请重新输出一个**最小化的合法 JSON 对象**，仅包含：一个 `thought`（一句话说明当前最稳妥的下一步），"
+                            "以及一个 `execution_operations` 数组（其中只含一个最简单、最安全的 `EXECUTE_NOW` 操作，"
+                            "例如对当前目标重新发起一次最小探针或观察）。"
+                            "禁止输出任何 JSON 以外的文本、解释或 `<think>` 段。"
+                        ),
+                    }
+                )
+                continue
             return (subtask_id, "error", cycle_metrics)
 
         # 更新上一步状态

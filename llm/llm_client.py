@@ -17,8 +17,11 @@ from conf.config import (
     LLM_FALLBACK_API_KEY,
     LLM_MODELS,
     LLM_TEMPERATURES,
+    LLM_MAX_TOKENS,
     LLM_EXTRA_BODY_ENABLED,
     LLM_THINKING,
+    LLM_JSON_MODE,
+    LLM_DISABLE_THINKING,
     ANTHROPIC_API_BASE_URL,
     ANTHROPIC_API_KEY,
     ANTHROPIC_FALLBACK_API_KEY,
@@ -31,6 +34,25 @@ try:
     from core.events import broker
 except ImportError:
     broker = None
+
+
+# 本地 reasoning 模型（QwQ/Qwen3 等）会在 content 直接吐出 <think>...</think> 段，
+# 其中的花括号会被 JSON 解析的“首 { 到末 }”启发式吞入。下面两个正则用于在解析前剥离这些段。
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+_THINK_DANGLING_RE = re.compile(r"<think>.*$", re.DOTALL | re.IGNORECASE)
+
+
+def strip_think_blocks(text: str) -> str:
+    """移除 reasoning 模型吐出的 <think>...</think> 段，用于 JSON 解析前的净化。
+
+    先以非贪婪方式移除成对的 <think>...</think>（避免吞掉其后的真实内容），再移除未闭合的
+    <think>（被截断的思考）到串尾。注意：对 payload 中字面出现且未闭合的 <think> 会误伤，但
+    安全知识库中此种情况罕见（见 docs/local-model-optimization-plan.md item 6）。
+    """
+    if not isinstance(text, str):
+        return text
+    text = _THINK_BLOCK_RE.sub("", text)
+    return _THINK_DANGLING_RE.sub("", text)
 
 
 class LLMClient:
@@ -67,6 +89,7 @@ class LLMClient:
             self.completion_token_cost = 0.000002  # $2 per million tokens
 
         self.temperatures = LLM_TEMPERATURES
+        self.max_tokens = LLM_MAX_TOKENS
         self.client = httpx.AsyncClient()
         self.console = None  # Will initialize console when needed
         self.reset_metrics()
@@ -122,7 +145,7 @@ class LLMClient:
         # Return metrics for this specific call
         return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "cost_cny": cost_cny}
 
-    def _prepare_anthropic_payload(self, current_messages: list, model_name: str) -> tuple[dict, dict]:
+    def _prepare_anthropic_payload(self, current_messages: list, model_name: str, max_tokens: int) -> tuple[dict, dict]:
         """
         为Anthropic API准备请求载荷。
 
@@ -151,7 +174,7 @@ class LLMClient:
 
         payload = {
             "model": model_name,
-            "max_tokens": 4096,
+            "max_tokens": max_tokens,
             "stream": False,
             "messages": other_messages,
         }
@@ -160,8 +183,36 @@ class LLMClient:
 
         return headers, payload
 
+    def _role_disables_thinking(self, role: str) -> bool:
+        """该角色是否禁用模型思考段（LLM_DISABLE_THINKING）。"""
+        return LLM_DISABLE_THINKING.get(role, LLM_DISABLE_THINKING.get("default", False))
+
+    def _build_extra_body(self, role: str, expect_json: bool, json_mode: str) -> dict:
+        """组装 OpenAI 兼容接口的 extra_body（合并思考模式 / guided_json / 禁用思考）。
+
+        统一在此处装配，避免 item 2（guided_json）与 item 6（禁用思考）互相覆盖。
+        返回空 dict 表示无需注入 extra_body。
+        """
+        extra_body: dict = {}
+
+        # 思考模式 (extra_body.thinking)：仅在显式启用 extra_body 且角色配置为 hidden/visible 时注入（沿用原行为）
+        if LLM_EXTRA_BODY_ENABLED:
+            thinking_mode = LLM_THINKING.get(role, LLM_THINKING.get("default", "off")).lower()
+            if thinking_mode in ("hidden", "visible"):
+                extra_body["thinking"] = thinking_mode
+
+        # guided-JSON（宽松档 2a）：仅约束“输出为合法 JSON 对象”，与具体字段无关（vLLM/SGLang）
+        if expect_json and json_mode == "guided_json":
+            extra_body["guided_json"] = {"type": "object"}
+
+        # 禁用模型思考段（vLLM/SGLang 风格）：Ollama 走顶层 think 字段，故此处排除 ollama
+        if self._role_disables_thinking(role) and json_mode != "ollama":
+            extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+
+        return extra_body
+
     def _prepare_openai_payload(
-        self, current_messages: list, model_name: str, temperature: float, role: str, expect_json: bool
+        self, current_messages: list, model_name: str, temperature: float, role: str, expect_json: bool, max_tokens: int
     ) -> tuple[dict, dict]:
         """
         为OpenAI API准备请求载荷。
@@ -174,18 +225,28 @@ class LLMClient:
             "model": model_name,
             "messages": current_messages,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "stream": False,
         }
 
-        # 如果启用 extra_body 并且为该角色配置了非 off 的思考模式
-        if LLM_EXTRA_BODY_ENABLED:
-            thinking_mode = LLM_THINKING.get(role, LLM_THINKING.get("default", "off")).lower()
-            if thinking_mode in ["hidden", "visible"]:
-                payload["extra_body"] = {"thinking": thinking_mode}
+        json_mode = LLM_JSON_MODE.lower()
 
-        # 强制 JSON 输出
+        # 约束解码 / JSON 输出（按后端选择顶层注入方式；guided_json 走 extra_body）
         if expect_json:
-            payload["response_format"] = {"type": "json_object"}
+            if json_mode == "ollama":
+                payload["format"] = "json"
+            elif json_mode in ("guided_json", "off"):
+                pass  # guided_json → extra_body（见 _build_extra_body）；off → 不注入约束
+            else:  # "json_object"（默认）及未知值，等价于改动前行为
+                payload["response_format"] = {"type": "json_object"}
+
+        # 禁用思考：Ollama 走顶层 think 字段（vLLM/SGLang 走 extra_body.chat_template_kwargs）
+        if json_mode == "ollama" and self._role_disables_thinking(role):
+            payload["think"] = False
+
+        extra_body = self._build_extra_body(role, expect_json, json_mode)
+        if extra_body:
+            payload["extra_body"] = extra_body
 
         return headers, payload
 
@@ -282,13 +343,17 @@ class LLMClient:
         Returns: A tuple containing:
                  - The parsed dictionary or raw string.
                  - A dictionary with the metrics for this specific call (tokens, cost).
-                 Returns (None, None) if all retries fail.
+                 Returns (None, None) if all retries fail. 例外：当 expect_json 且 JSON 重试
+                 耗尽时，返回 (None, {"raw": <最后一次原始内容>})，以便调用方（Executor）尝试
+                 从原文抢救可执行操作（item 4 韧性，见 docs/local-model-optimization-plan.md）。
         """
         model_name = self.models.get(role) or self.models.get("default")
         temperature = self.temperatures.get(role, self.temperatures.get("default", 0.2))
+        max_tokens = self.max_tokens.get(role, self.max_tokens.get("default", 4096))
 
         json_parsing_retries = 0
         MAX_JSON_PARSE_RETRIES = 3  # 允许2次重试 (总共3次尝试)
+        last_raw_content: Optional[str] = None  # 最后一次模型原始内容，供解析失败时透出抢救
 
         api_call_retries = 0
         MAX_API_CALL_RETRIES = 10  # TPM limit retries
@@ -321,10 +386,10 @@ class LLMClient:
             try:
                 # 准备API请求
                 if self.provider == "anthropic":
-                    headers, payload = self._prepare_anthropic_payload(current_messages, model_name)
+                    headers, payload = self._prepare_anthropic_payload(current_messages, model_name, max_tokens)
                 else:  # OpenAI
                     headers, payload = self._prepare_openai_payload(
-                        current_messages, model_name, temperature, role, expect_json
+                        current_messages, model_name, temperature, role, expect_json, max_tokens
                     )
 
                 # 更新headers中的API key
@@ -342,6 +407,7 @@ class LLMClient:
                 # 提取响应内容
                 api_response_json = json.loads(response.text)
                 content_string, call_metrics = await self._extract_response_content(api_response_json, model_name)
+                last_raw_content = content_string  # 记录原始内容，JSON 解析失败耗尽重试时透出供抢救
 
                 # 发送响应事件
                 if broker and self.op_id:
@@ -379,6 +445,11 @@ class LLMClient:
                 json_parsing_retries += 1
                 if json_parsing_retries > MAX_JSON_PARSE_RETRIES:
                     self._get_console().print("[bold red]JSON解析最终失败，已达最大重试次数。[/bold red]")
+                    # item 4（韧性）：把最后一次原始内容经 metrics 透出（按调用返回，并发安全），
+                    # 让 Executor 尝试抢救 execution_operations，而非直接杀掉子任务。
+                    # update_*_metrics 只读 token 字段，附带 "raw" 不影响既有计量行为。
+                    if last_raw_content:
+                        return None, {"raw": last_raw_content}
                     return None, None
 
                 self._get_console().print(
@@ -510,11 +581,14 @@ class LLMClient:
 
     def _clean_json_string(self, json_string: str) -> str:
         """
-        清理JSON字符串：移除BOM、空白、Markdown代码块。
+        清理JSON字符串：剥离<think>段、移除BOM、空白、Markdown代码块。
 
         Returns:
             清理后的字符串
         """
+        # 剥离 reasoning 模型吐出的 <think>...</think> 段（须在 BOM/围栏处理之前）
+        json_string = strip_think_blocks(json_string)
+
         # 移除 UTF-8 BOM
         if json_string.startswith("\ufeff"):
             json_string = json_string.lstrip("\ufeff")
